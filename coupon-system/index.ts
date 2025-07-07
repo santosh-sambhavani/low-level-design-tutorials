@@ -120,6 +120,7 @@ class Cart {
     private discount: number = 0;
     private isLoyaltyApplied: boolean = false;
     coupon: ICoupon | undefined;
+    lastCoupon: ICoupon | undefined;
 
     getOriginalTotal() {
         return this.originalTotal;
@@ -163,10 +164,51 @@ class Cart {
         this.changeFinalTotal();
     }
 
+    private addNewCoupon(newCoupon: ICoupon) {
+        if (this.lastCoupon) {
+            this.lastCoupon.setNext(newCoupon);
+            this.lastCoupon = newCoupon;
+        } else {
+            this.coupon = newCoupon;
+            this.lastCoupon = newCoupon;
+        }
+    }
+
     applyDiscount(coupon: ICoupon) {
+        this.addNewCoupon(coupon);
         const discount = coupon.applyDiscount(this);
         this.discount += discount;
         this.changeFinalTotal();
+    }
+
+    private resetAll() {
+        this.originalTotal = 0;
+        this.finalTotal = 0;
+        this.discount = 0;
+    }
+
+    recalculate() {
+        this.resetAll();
+        this.calculateTotal();
+        let coupon = this.coupon;
+        while (coupon) {
+            this.applyDiscount(coupon);
+            coupon = coupon.getNext();
+        }
+    }
+
+    private getCoupons() {
+        const coupons = [];
+        let coupon = this.coupon;
+        while (coupon) {
+            coupons.push(coupon);
+            coupon = coupon.getNext();
+        }
+        return coupons;
+    }
+
+    getItems() {
+        return Array.from(this.itemsMapper.values());
     }
 
     getDetails() {
@@ -175,6 +217,7 @@ class Cart {
                 quantity: item.getQuantity(),
                 product: item.getProduct()
             })),
+            coupons: this.getCoupons(),
             originalTotal: this.originalTotal,
             discount: this.discount,
             total: this.finalTotal,
@@ -235,7 +278,7 @@ class PercentageWithCapDiscount implements IDiscountStrategy {
 }
 
 abstract class ICoupon {
-    private next: ICoupon | null = null;
+    private next: ICoupon | undefined = undefined;
     constructor(
         public code: string,
         public isCombinable: boolean,
@@ -244,6 +287,10 @@ abstract class ICoupon {
 
     setNext(coupon: ICoupon) {
         this.next = coupon;
+    }
+
+    getNext() {
+        return this.next;
     }
 
     abstract isApplicable(cart: Cart): boolean
@@ -275,7 +322,8 @@ class SeasonalCoupon extends ICoupon {
 
     isApplicable(cart: Cart): boolean {
         const today = new Date();
-        return today >= this.startDate
+        return this.isCombinable
+            && today >= this.startDate
             && today <= this.endDate
             && cart.getDetails().items.some(
                 item => this.productCategories.includes(item.product.getCategory())
@@ -294,10 +342,21 @@ class ProductLevelDiscountCoupon extends ICoupon {
     }
 
     isApplicable(cart: Cart): boolean {
-        return cart.getDetails().items.some(item => {
-            const product = item.product;
-            return this.productCategories.includes(product.getCategory());
-        });
+        return this.isCombinable
+            && cart.getItems().some(item => {
+                const product = item.getProduct();
+                return this.productCategories.includes(product.getCategory());
+            });
+    }
+
+    getDiscount(cart: Cart): number {
+        let total = 0;
+        cart.getItems().forEach(item => {
+            if (this.productCategories.includes(item.getProduct().getCategory())) {
+                total += item.getPrice();
+            }
+        })
+        return this.discountStrategy.calculateDiscount(total);
     }
 }
 
@@ -311,7 +370,7 @@ class LoyaltyDiscountCoupon extends ICoupon {
     }
 
     isApplicable(cart: Cart): boolean {
-        return cart.getDetails().isLoyaltyApplied;
+        return this.isCombinable && cart.getDetails().isLoyaltyApplied;
     }
 }
 
@@ -435,12 +494,13 @@ console.log(cart.getDetails());
 
 console.log("============= Add Coupons ============= ");
 const couponManager = CouponManager.getInstance();
+const cartManager = CartManager.getInstance();
 const additionalData: IAdditionalData = {
     startDate: new Date('2025-01-01'),
     endDate: new Date('2025-12-31'),
     productCategories: [ProductCategory.Electronics, ProductCategory.Clothing],
     percentage: 20,
-    cap: 100,
+    cap: 250,
     discountAmount: 50
 };
 const seasonalCoupon = couponManager.addCoupon(
@@ -450,12 +510,23 @@ const seasonalCoupon = couponManager.addCoupon(
     CouponType.Seasonal,
     additionalData
 );
+const productLevelDiscountCoupon = couponManager.addCoupon(
+    'ELECTRONICS5',
+    true,
+    DiscountStrategyType.Percentage,
+    CouponType.ProductLevelDiscount,
+    {
+        percentage: 5,
+        productCategories: [ProductCategory.Electronics]
+    } as IAdditionalData
+)
 console.log(couponManager.getCoupons());
 
 console.log("============= Check Applicable Coupons ============= ");
-const applicableCoupons = CartManager.getInstance().getAllApplicableCouponsForCart(cart);
+const applicableCoupons = cartManager.getAllApplicableCouponsForCart(cart);
 console.log(applicableCoupons);
 
 console.log("============= Apply Coupon ============= ");
 cart.applyDiscount(seasonalCoupon);
+cart.applyDiscount(productLevelDiscountCoupon);
 console.log(JSON.stringify(cart.getDetails(), null, 2));
